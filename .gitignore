@@ -1,6 +1,4 @@
-# Docs (local design/plan documents)
-docs/
-
+# Sphinx documentation build output only
 # LangGraph Checkpoints
 graph_checkpoints.db
 graph_checkpoints.db-shm
