@@ -48,12 +48,12 @@ async def test_indicators_volume(ticker="600519", date=None, look_back_days=20):
         date = datetime.now().strftime("%Y-%m-%d")
 
     print(f"\n{'='*60}")
-    print(f"测试 get_indicators (volume): {ticker} @ {date}, 回溯{look_back_days}天")
+    print(f"测试 get_indicators (vwma): {ticker} @ {date}, 回溯{look_back_days}天")
     print(f"{'='*60}\n")
 
     result = await _safe(get_indicators, {
         "symbol": ticker,
-        "indicator": "volume",
+        "indicator": "vwma",
         "curr_date": date,
         "look_back_days": look_back_days,
     })
@@ -83,7 +83,7 @@ async def test_all_parallel(ticker="600519", date=None):
         _safe(get_lhb_detail, {"symbol": ticker, "date": date}),
         _safe(get_indicators, {
             "symbol": ticker,
-            "indicator": "volume",
+            "indicator": "vwma",
             "curr_date": date,
             "look_back_days": 20,
         })
