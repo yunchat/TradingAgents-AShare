@@ -939,8 +939,11 @@ class CnAkshareProvider(BaseMarketDataProvider):
             if df.empty:
                 return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
             return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+        except TypeError as exc:
+            # akshare 当日数据未更新时，data_json["result"] 为 None
+            return f"{date} 龙虎榜数据尚未更新（通常发生在盘中查询当日数据）。"
         except Exception as exc:
-            return f"龙虎榜数据暂时不可用（akshare 接口问题）：{type(exc).__name__}"
+            return f"龙虎榜数据获取失败（akshare 接口异常）：{type(exc).__name__}"
 
     def get_zt_pool(self, date: str) -> str:
         """获取涨停板情绪池，反映市场整体情绪温度。"""
