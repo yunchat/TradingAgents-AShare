@@ -215,8 +215,6 @@ class CnAkshareProvider(BaseMarketDataProvider):
             "成交量": "Volume",
             "volume": "Volume",
             "Volume": "Volume",
-            "amount": "Volume",
-            "Amount": "Volume",
         }
         df = raw_df.rename(columns=col_map).copy()
         required = ["Date", "Open", "High", "Low", "Close", "Volume"]
@@ -306,7 +304,20 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 except Exception as exc:
                     etf_errors.append(f"fund_etf_hist_em: {type(exc).__name__}")
 
-            # Source 1: Eastmoney (default)
+            # Source 1: Sina (default)
+            try:
+                df = ak.stock_zh_a_daily(
+                    symbol=symbol_with_market,
+                    start_date=start_yyyymmdd,
+                    end_date=end_yyyymmdd,
+                    adjust="qfq",
+                )
+                out = self._normalize_hist_df(df)
+                return self._maybe_append_realtime_row(symbol, out, end_date)
+            except Exception:
+                pass
+
+            # Source 2: Eastmoney
             em_last_exc = None
             for i in range(2):
                 try:
@@ -337,7 +348,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             except Exception:
                 pass
 
-            # Source 3: Tencent
+            # Source 3: Tencent (amount column = volume in lots/手)
             try:
                 df = ak.stock_zh_a_hist_tx(
                     symbol=symbol_with_market,
@@ -345,6 +356,9 @@ class CnAkshareProvider(BaseMarketDataProvider):
                     end_date=end_yyyymmdd,
                     adjust="qfq",
                 )
+                if "amount" in df.columns and "volume" not in df.columns:
+                    df = df.rename(columns={"amount": "volume"})
+                    df["volume"] = df["volume"] * 100  # 手→股
                 out = self._normalize_hist_df(df)
                 return self._maybe_append_realtime_row(symbol, out, end_date, assume_locked=True)
             except Exception:
