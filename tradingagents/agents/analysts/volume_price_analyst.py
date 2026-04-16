@@ -4,6 +4,22 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.dataflows.trade_calendar import cn_market_phase, cn_today_str
+
+
+def _market_phase_note(current_date: str) -> str:
+    if current_date != cn_today_str():
+        return ""
+    phase = cn_market_phase()
+    if phase == "pre_open":
+        return "【数据说明】当前为盘前，今日尚无交易数据，以下指标基于昨日收盘，信号可靠。\n\n"
+    if phase in ("in_session", "lunch_break"):
+        return (
+            "【数据说明】当前为盘中，今日K线为截至当前的不完整数据（volume未完成），"
+            "量价指标（OBV/量比等）为临时值，信号不稳定。"
+            "请以历史确认信号为主，今日盘中数据仅作参考。\n\n"
+        )
+    return ""  # post_close: 数据完整，无需特殊说明
 
 
 def create_volume_price_analyst(llm, data_collector=None):
@@ -35,7 +51,8 @@ def create_volume_price_analyst(llm, data_collector=None):
             SystemMessage(content=horizon_ctx + system_message + "\n\n请全程使用中文。"),
             HumanMessage(content=(
                 f"以下是 {ticker} 在 {current_date} 的量价分析预计算数据（数据窗口：{data_window}）。\n\n"
-                f"{vpa_data}\n\n"
+                + _market_phase_note(current_date)
+                + f"{vpa_data}\n\n"
                 f"【原始 K 线数据参考】\n{stock_data}"
             )),
         ]
