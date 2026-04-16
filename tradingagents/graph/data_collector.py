@@ -10,6 +10,7 @@ import pandas as pd
 from stockstats import wrap
 import io
 
+from tradingagents.dataflows.trade_calendar import cn_market_phase, cn_today_str
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
@@ -62,6 +63,28 @@ def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
 
 
 # ── VPA (Volume Price Analysis) 预计算 ──────────────────────────
+
+
+def _intraday_label() -> tuple[str, bool]:
+    """Return (time_label, is_intraday). label e.g. '(盘中13:32,约67%)'"""
+    phase = cn_market_phase()
+    if phase not in ("in_session", "lunch_break"):
+        return "", False
+    now = datetime.now()
+    # A-share: 09:30-11:30 (120min) + 13:00-15:00 (120min) = 240min total
+    morning_start = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    morning_end = now.replace(hour=11, minute=30, second=0, microsecond=0)
+    afternoon_start = now.replace(hour=13, minute=0, second=0, microsecond=0)
+    afternoon_end = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    elapsed = 0
+    if now <= morning_end:
+        elapsed = max(0, (now - morning_start).seconds // 60)
+    elif now < afternoon_start:
+        elapsed = 120  # lunch break
+    else:
+        elapsed = 120 + max(0, (now - afternoon_start).seconds // 60)
+    pct = min(100, round(elapsed / 240 * 100))
+    return f"(盘中{now.strftime('%H:%M')},约{pct}%)", True
 
 
 def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
@@ -163,12 +186,20 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
     lines.append("| 日期 | 类型 | 涨跌幅 | 实体大小 | 收盘位置 | 上影线 | 下影线 | 量比 | 量价关系 |")
     lines.append("|------|------|--------|----------|----------|--------|--------|------|----------|")
 
-    for _, row in recent.iterrows():
+    intraday_label, is_intraday = _intraday_label()
+    today_str = cn_today_str()
+    has_intraday_row = False
+
+    for idx, (_, row) in enumerate(recent.iterrows()):
         dt = row.get("date", "")
         if hasattr(dt, "strftime"):
+            dt_str = dt.strftime("%Y-%m-%d")
             dt = dt.strftime("%m-%d")
         else:
+            dt_str = str(dt)
             dt = str(dt)[-5:]
+
+        is_today_row = is_intraday and dt_str == today_str and idx == len(recent) - 1
 
         pct = row["pct_change"] * 100 if pd.notna(row["pct_change"]) else 0
         spread_label = "宽" if row["bar_spread"] > 0.03 else ("窄" if row["bar_spread"] < 0.015 else "中")
@@ -187,11 +218,22 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
         elif vr < 0.8:
             vr_label += "(缩量)"
 
+        if is_today_row:
+            dt += intraday_label
+            vr_label += "*"
+            harmony = row['vp_harmony'] + "*"
+            has_intraday_row = True
+        else:
+            harmony = row['vp_harmony']
+
         lines.append(
             f"| {dt} | {row['bar_type']} | {pct:+.1f}% | {spread_label}({row['bar_spread']:.3f}) "
             f"| {cp_label}({cp:.2f}) | {row['upper_shadow']:.2f} | {row['lower_shadow']:.2f} "
-            f"| {vr_label} | {row['vp_harmony']} |"
+            f"| {vr_label} | {harmony} |"
         )
+
+    if has_intraday_row:
+        lines.append("\n> \\* 盘中临时值，volume 未完成，量比和量价关系可能在收盘后改变")
 
     # ── 关键模式识别 ──
     lines.append("\n### 关键量价模式识别\n")
