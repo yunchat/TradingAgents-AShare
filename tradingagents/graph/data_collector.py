@@ -10,6 +10,7 @@ import pandas as pd
 from stockstats import wrap
 import io
 
+from tradingagents.dataflows.trade_calendar import cn_market_phase, cn_today_str
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
@@ -64,6 +65,38 @@ def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
 # ── VPA (Volume Price Analysis) 预计算 ──────────────────────────
 
 
+def _intraday_label() -> tuple[str, bool]:
+    """Return (time_label, is_intraday). label e.g. '(盘中13:32,约67%)'"""
+    phase = cn_market_phase()
+    if phase not in ("in_session", "lunch_break"):
+        return "", False
+    now = datetime.now()
+    # A-share: 09:30-11:30 (120min) + 13:00-15:00 (120min) = 240min total
+    morning_start = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    morning_end = now.replace(hour=11, minute=30, second=0, microsecond=0)
+    afternoon_start = now.replace(hour=13, minute=0, second=0, microsecond=0)
+    afternoon_end = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    elapsed = 0
+    if now <= morning_end:
+        elapsed = max(0, (now - morning_start).seconds // 60)
+    elif now < afternoon_start:
+        elapsed = 120  # lunch break
+    else:
+        elapsed = 120 + max(0, (now - afternoon_start).seconds // 60)
+    pct = min(100, round(elapsed / 240 * 100))
+    return f"(盘中{now.strftime('%H:%M')},约{pct}%)", True
+
+
+def _get_progress_factor() -> float:
+    now = datetime.now()
+    m = now.hour * 60 + now.minute
+    if m <= 570: return 0.05
+    if m <= 690: return max(0.05, (m - 570) / 240.0)
+    if m < 780:  return 0.5
+    if m <= 900: return (120 + (m - 780)) / 240.0
+    return 1.0
+
+
 def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
     """Pre-compute Volume Price Analysis indicators from OHLCV DataFrame.
 
@@ -89,6 +122,16 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
     # ── 派生指标 ──
     df["vol_ma"] = df["volume"].rolling(window).mean()
     df["volume_ratio"] = df["volume"] / df["vol_ma"]
+
+    # ── 盘中投影修正（只修正最后一行今日数据）──
+    intraday_label, is_intraday = _intraday_label()
+    today_str = cn_today_str()
+    if is_intraday:
+        last = df.iloc[-1]
+        last_dt = last.get("date", "")
+        last_dt_str = last_dt.strftime("%Y-%m-%d") if hasattr(last_dt, "strftime") else str(last_dt)
+        if last_dt_str == today_str:
+            df.at[df.index[-1], "volume_ratio"] /= _get_progress_factor()
 
     hl_range = df["high"] - df["low"]
     df["bar_spread"] = hl_range / df["close"]  # 实体相对大小
@@ -121,19 +164,25 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_trend_ratio"] = df["vol_ma5"] / df["vol_ma"]
 
-    # 量价一致性
-    df["vp_harmony"] = np.where(
-        (df["pct_change"] > 0) & (df["volume_ratio"] > 1.0), "一致(涨+放量)",
-        np.where(
-            (df["pct_change"] < 0) & (df["volume_ratio"] > 1.0), "一致(跌+放量)",
-            np.where(
-                (df["pct_change"] > 0) & (df["volume_ratio"] < 0.8), "背离(涨+缩量)",
-                np.where(
-                    (df["pct_change"] < 0) & (df["volume_ratio"] < 0.8), "背离(跌+缩量)",
-                    "中性",
-                ),
-            ),
-        ),
+    # 量价一致性（威科夫矩阵）
+    vr  = df["volume_ratio"]
+    pct = df["pct_change"]
+    df["vp_harmony"] = np.select(
+        [
+            (pct >  0.005) & (vr > 1.2),
+            (pct >  0.005) & (vr < 0.7),
+            (pct < -0.005) & (vr > 1.2),
+            (pct < -0.005) & (vr < 0.7),
+            (pct.abs() <= 0.005) & (vr > 1.8),
+        ],
+        [
+            "一致(量增价涨)",
+            "背离(量缩价涨)",
+            "一致(量增价跌)",
+            "背离(量缩价跌)",
+            "异常(放量滞涨)",
+        ],
+        default="中性(量价均衡)",
     )
 
     # OBV (On Balance Volume) 简易趋势 — vectorized
@@ -163,12 +212,18 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
     lines.append("| 日期 | 类型 | 涨跌幅 | 实体大小 | 收盘位置 | 上影线 | 下影线 | 量比 | 量价关系 |")
     lines.append("|------|------|--------|----------|----------|--------|--------|------|----------|")
 
-    for _, row in recent.iterrows():
+    has_intraday_row = False
+
+    for idx, (_, row) in enumerate(recent.iterrows()):
         dt = row.get("date", "")
         if hasattr(dt, "strftime"):
+            dt_str = dt.strftime("%Y-%m-%d")
             dt = dt.strftime("%m-%d")
         else:
+            dt_str = str(dt)
             dt = str(dt)[-5:]
+
+        is_today_row = is_intraday and dt_str == today_str and idx == len(recent) - 1
 
         pct = row["pct_change"] * 100 if pd.notna(row["pct_change"]) else 0
         spread_label = "宽" if row["bar_spread"] > 0.03 else ("窄" if row["bar_spread"] < 0.015 else "中")
@@ -187,11 +242,22 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
         elif vr < 0.8:
             vr_label += "(缩量)"
 
+        if is_today_row:
+            dt += intraday_label
+            vr_label += "(预估)"
+            harmony = row['vp_harmony'] + "[预估]"
+            has_intraday_row = True
+        else:
+            harmony = row['vp_harmony']
+
         lines.append(
             f"| {dt} | {row['bar_type']} | {pct:+.1f}% | {spread_label}({row['bar_spread']:.3f}) "
             f"| {cp_label}({cp:.2f}) | {row['upper_shadow']:.2f} | {row['lower_shadow']:.2f} "
-            f"| {vr_label} | {row['vp_harmony']} |"
+            f"| {vr_label} | {harmony} |"
         )
+
+    if has_intraday_row:
+        lines.append("\n> [预估] 量比已按时间进度投影修正，收盘后自动还原为真实值")
 
     # ── 关键模式识别 ──
     lines.append("\n### 关键量价模式识别\n")
@@ -236,6 +302,45 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
         lines.append("- 近期无显著量价异常模式")
 
     return "\n".join(lines)
+
+
+def stock_data_to_markdown(raw_csv: str) -> str:
+    """Convert raw stock CSV to Markdown table(s) for LLM consumption.
+
+    Intraday: splits into confirmed history table + today's incomplete table.
+    Post-close: single table, no annotation.
+    """
+    df = _parse_csv_to_dataframe(raw_csv)
+    if df is None or df.empty:
+        return raw_csv
+
+    intraday_label, is_intraday = _intraday_label()
+    today_str = cn_today_str()
+
+    last_dt = df.iloc[-1].get("date", "")
+    last_dt_str = last_dt.strftime("%Y-%m-%d") if hasattr(last_dt, "strftime") else str(last_dt)
+    is_today_last = is_intraday and last_dt_str == today_str
+
+    def _row(r, label=""):
+        dt = r.get("date", "")
+        dt_s = (dt.strftime("%m-%d") if hasattr(dt, "strftime") else str(dt)[-5:]) + label
+        vol = f"{int(r['volume']):,}" if pd.notna(r.get("volume")) else "-"
+        return f"| {dt_s} | {r['open']:.2f} | {r['high']:.2f} | {r['low']:.2f} | {r['close']:.2f} | {vol} |"
+
+    header  = "| 日期 | 开盘 | 最高 | 最低 | 收盘 | 成交量 |\n|------|------|------|------|------|--------|"
+    h_today = "| 日期 | 开盘 | 最高(临时) | 最低(临时) | 当前价(临时) | 当前量 |\n|------|------|-----------|-----------|------------|--------|"
+
+    if is_today_last:
+        hist = "\n".join(_row(r) for _, r in df.iloc[:-1].iterrows())
+        last_row = _row(df.iloc[-1], intraday_label)
+        label_clean = intraday_label.strip("()")
+        return (
+            f"#### 历史 K 线（已确认）\n{header}\n{hist}\n\n"
+            f"#### 今日盘中 K 线（未完成，{label_clean}）\n{h_today}\n{last_row}\n"
+            "> close/high/low/volume 为截至当前临时值。"
+        )
+
+    return f"{header}\n" + "\n".join(_row(r) for _, r in df.iterrows())
 
 
 def make_cache_key(ticker: str, trade_date: str) -> str:

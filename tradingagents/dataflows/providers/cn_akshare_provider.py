@@ -370,7 +370,8 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
     def _fetch_realtime_row_unlocked(self, symbol: str) -> pd.DataFrame:
         ak = self._ak()
-        spot = ak.stock_individual_spot_xq(symbol=self._xq_symbol(symbol))
+        xq_token = os.environ.get("XQ_A_TOKEN")
+        spot = ak.stock_individual_spot_xq(symbol=self._xq_symbol(symbol), token=xq_token)
         if spot is None or spot.empty:
             return pd.DataFrame()
         if not {"item", "value"}.issubset(set(spot.columns)):
