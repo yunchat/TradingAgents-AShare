@@ -17,6 +17,8 @@ def _get_df(ticker, date, look_back_days=30):
 
 def test_stock_data(ticker="600519", date=None, look_back_days=30):
     """测试原始 K 线数据获取"""
+    from tradingagents.graph.data_collector import stock_data_to_markdown
+
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
@@ -28,6 +30,11 @@ def test_stock_data(ticker="600519", date=None, look_back_days=30):
         result = _get_df(ticker, date, look_back_days)
         print(result)
         print(f"\n返回长度: {len(result)} 字符")
+
+        print(f"\n{'='*60}")
+        print("stock_data_to_markdown 输出：")
+        print(f"{'='*60}\n")
+        print(stock_data_to_markdown(result))
     except Exception as exc:
         print(f"调用失败：{exc}")
 

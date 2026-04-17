@@ -5,6 +5,7 @@ from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 from tradingagents.dataflows.trade_calendar import cn_market_phase, cn_today_str
+from tradingagents.graph.data_collector import stock_data_to_markdown
 
 
 def _market_phase_note(current_date: str) -> str:
@@ -47,14 +48,33 @@ def create_volume_price_analyst(llm, data_collector=None):
         else:
             vpa_data, stock_data, data_window = "无数据", "无数据", "14天"
 
-        messages = [
-            SystemMessage(content=horizon_ctx + system_message + "\n\n请全程使用中文。"),
-            HumanMessage(content=(
+        phase = cn_market_phase()
+        is_intraday = phase in ("in_session", "lunch_break")
+
+        if is_intraday and isinstance(vpa_data, str) and "\n" in vpa_data:
+            vpa_lines = vpa_data.splitlines()
+            fn_idx = next((i for i, l in enumerate(vpa_lines) if l.startswith("> ")), len(vpa_lines))
+            history_part = "\n".join(vpa_lines[:fn_idx - 1])
+            today_part   = "\n".join(vpa_lines[fn_idx - 1:])
+            human_content = (
+                f"以下是 {ticker} 在 {current_date} 的量价分析（数据窗口：{data_window}）。\n\n"
+                f"### 第一部分：历史量价背景（已确认数据）\n{history_part}\n"
+                f"> 请先评估历史区间整体趋势：底部吸筹、放量拉升、还是高位派发？\n\n"
+                f"### 第二部分：今日盘中动态快照（量比已按时间进度投影修正）\n{today_part}\n"
+                f"> 对比历史背景，今日预估量能是增强了趋势，还是产生了异动？\n\n"
+                f"【原始 K 线数据参考】\n{stock_data_to_markdown(stock_data)}"
+            )
+        else:
+            human_content = (
                 f"以下是 {ticker} 在 {current_date} 的量价分析预计算数据（数据窗口：{data_window}）。\n\n"
                 + _market_phase_note(current_date)
                 + f"{vpa_data}\n\n"
-                f"【原始 K 线数据参考】\n{stock_data}"
-            )),
+                f"【原始 K 线数据参考】\n{stock_data_to_markdown(stock_data)}"
+            )
+
+        messages = [
+            SystemMessage(content=horizon_ctx + system_message + "\n\n请全程使用中文。"),
+            HumanMessage(content=human_content),
         ]
 
         tracker = current_tracker_var.get()

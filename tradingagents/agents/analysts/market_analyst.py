@@ -7,6 +7,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.graph.data_collector import stock_data_to_markdown
 
 # List of technical indicators to retrieve
 MARKET_INDICATORS = [
@@ -58,7 +59,7 @@ def create_market_analyst(llm, data_collector=None):
             HumanMessage(content=(
                 horizon_ctx + "\n"
                 f"以下是 {ticker} 在 {current_date} 的 K 线数据与指标（数据窗口：{data_window}）。\n\n"
-                f"【get_stock_data】\n{stock_data}\n\n"
+                f"【K 线数据】\n{stock_data_to_markdown(stock_data)}\n\n"
                 + "\n\n".join(indicator_blocks)
             )),
         ]
